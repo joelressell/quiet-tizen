@@ -1,6 +1,6 @@
 {
   "profile_version": 1,
-  "support_status": "backup-validated",
+  "support_status": "preview-validated",
   "model": "QN75QN85DDFXZA",
   "firmware": "T-PTMDAKUC-0090-2130.0",
   "identity_evidence": "Owner About TV screen",
@@ -46,7 +46,8 @@
     "On-device checks observed Tizen 9.0.0, Linux 5.4.249 armv7l, Microsoft.NETCore.App 6.0.9, and the package registry path and selected schemas. The ARM ABI remains unverified.",
     "A read-only root inventory found 554 application-registry rows, original Home/startup selectors, two visible source IDs, and settings key routes. Targeted cleanup and visible HDMI switching remain unverified.",
     "Four matching framework references were checksum-verified and copied privately; Quiet Home, QuickLaunch, and Probe compiled locally. The Quiet Home preview was installed and the owner confirmed it visible and navigable with the remote.",
-    "Fresh SQLite snapshots and the original Bixby Promotion package were saved on TV and checksum-verified on the desktop. Original Home/startup values were recorded. The preview has a fixed rollback script; cleanup and Home routing remain disabled.",
+    "The owner confirmed PlayStation 5 picture and sound on HDMI 1, YouTube, Netflix, and Prime Video launches, and responsive Volume, Sound, Advanced, Network, and Controllers controls. Nintendo Switch on HDMI 2 is unplugged and remains unverified.",
+    "Fresh SQLite snapshots and the original Bixby Promotion package were saved on TV and checksum-verified on the desktop. Original Home/startup values were recorded. The preview and Home routing have fixed inverse scripts. Home/startup were assigned to Quiet Home and independently read back; Home-button, restart, and standby tests remain pending. Cleanup remains disabled.",
     "Diagnostic collection does not obtain root or change persistent configuration. Its SDB transport can create temporary files and directories."
   ]
 }

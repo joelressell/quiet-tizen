@@ -39,9 +39,11 @@ class DeviceProfileTests(unittest.TestCase):
         require_operation(self.candidate, "preview-install")
         require_operation(self.candidate, "preview-launch")
         require_operation(self.candidate, "preview-restore")
+        require_operation(self.candidate, "home-route")
+        require_operation(self.candidate, "home-restore")
         for operation in ("push", "pull", "exec", "cleanup"):
             with self.subTest(operation=operation):
-                with self.assertRaisesRegex(ValueError, "backup-validated"):
+                with self.assertRaisesRegex(ValueError, "preview-validated"):
                     require_operation(self.candidate, operation)
 
     def test_identity_does_not_accept_related_models_or_normalize_firmware(self):

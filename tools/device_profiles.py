@@ -7,9 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE_PATH = ROOT / "profiles/un75u8000ffxza-1300.9.json"
 SUPPORT_STATUSES = frozenset(("case-study", "inventory-only", "access-evaluation", "access-validated",
-                              "backup-validated"))
+                              "backup-validated", "preview-validated"))
 OPERATIONS = frozenset(("doctor", "root-check", "inventory", "framework-pull", "source-probe",
                         "snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore",
+                        "home-route", "home-restore",
                         "push", "pull", "exec", "cleanup"))
 
 
@@ -70,6 +71,9 @@ def require_operation(profile, operation):
                              "snapshot", "backup-pull"},
         "backup-validated": {"doctor", "root-check", "inventory", "framework-pull", "source-probe",
                              "snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore"},
+        "preview-validated": {"doctor", "root-check", "inventory", "framework-pull", "source-probe",
+                              "snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore",
+                              "home-route", "home-restore"},
         "case-study": OPERATIONS,
     }[status]
     if operation not in allowed:

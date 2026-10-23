@@ -55,7 +55,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse(report["root_tested"])
         self.assertFalse(report["launcher_tested"])
         self.assertFalse(report["cleanup_tested"])
-        self.assertEqual(report["profile"]["support_status"], "backup-validated")
+        self.assertEqual(report["profile"]["support_status"], "preview-validated")
         self.assertTrue(report["identity"]["matches_profile"])
         for call in self.client.capture.call_args_list:
             self.assertEqual(call.kwargs["callback_host"], "192.0.2.20")
@@ -125,7 +125,7 @@ class DiagnosticsTests(unittest.TestCase):
         for operation in operations:
             with self.subTest(operation=operation), patch("tv.find_sdb") as find, \
                     patch("tv.SdbClient") as client, patch("tv.probe") as probe:
-                with self.assertRaisesRegex(ValueError, "backup-validated"):
+                with self.assertRaisesRegex(ValueError, "preview-validated"):
                     tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
                              "--firmware", self.profile["firmware"], *operation])
                 find.assert_not_called()
@@ -324,6 +324,40 @@ class DiagnosticsTests(unittest.TestCase):
                 "app_launcher -u 5001 -s com.samsung.tv.bixby-promotion",
                 callback_host=None, timeout=15)
             probe.assert_not_called()
+
+    def test_home_routing_stages_fixed_inverse_before_mutation(self):
+        from root_inventory import BACKUP_FILES
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "commands": [{"stdout": "route checked", "stderr": "", "exit_code": 0,
+                                "timed_out": False}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup = root / ".local/backups/home-test"
+            backup.mkdir(parents=True)
+            for name in BACKUP_FILES:
+                (backup / name).write_bytes(b"backup")
+            recipes = root / "recipes"
+            recipes.mkdir()
+            (recipes / "route-home.sh").write_bytes(b"set -eu\r\necho route\r\n")
+            (recipes / "restore-home-route.sh").write_bytes(b"set -eu\r\necho restore\r\n")
+            with patch("tv.ROOT", root), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "home-route", "home-test"])
+                self.assertEqual(probe.call_args.kwargs["staged_files"],
+                                 (("route-home.sh", b"set -eu\necho route\n"),
+                                  ("restore-home-route.sh", b"set -eu\necho restore\n")))
+                self.assertEqual(probe.call_args.kwargs["run_staged_shell"],
+                                 ("route-home.sh", "home-test"))
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "home-restore", "home-test"])
+                self.assertEqual(probe.call_args.kwargs["staged_files"],
+                                 (("restore-home-route.sh", b"set -eu\necho restore\n"),))
+                self.assertEqual(probe.call_args.kwargs["run_staged_shell"],
+                                 ("restore-home-route.sh", "home-test"))
 
     def test_explicit_doctor_identity_mismatch_stops_before_diagnostic_commands(self):
         with patch("tv.find_sdb", return_value=Path("sdb")), patch("tv.SdbClient"), \

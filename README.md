@@ -70,9 +70,9 @@ Root access is reacquired from the computer when maintenance requires it.
 
 The native launcher and underlying techniques were exercised on that TV.
 Fixed backup and preview installation stages have also run on the QN85DD;
-the full Home, settings-bridge, cleanup, and recovery sequence has not been
-replayed there. This matters especially for private Samsung APIs and registry
-schemas.
+guarded Home routing has now run on that TV. Home-button, restart, standby,
+settings-bridge, cleanup, and recovery testing are still pending. This matters
+especially for private Samsung APIs and registry schemas.
 
 **QN75QN85DDFXZA / T-PTMDAKUC-0090-2130.0:** a separate device profile and
 diagnostic report are available. Start with the [QN85DD guide](docs/10-qn85dd.md).
@@ -81,8 +81,9 @@ and source/Home probe passed on this TV. Matching private framework references
 were transferred and the launcher built locally. The original candidate package
 and SQLite databases were backed up on the TV and copied privately to the
 computer; the Quiet Home preview was installed and confirmed visible and
-navigable. Home/startup routing, arbitrary execution/transfers, cleanup, and
-post-restart operation remain disabled or unverified.
+navigable. Home/startup selectors were assigned and read back, while the Home
+button and post-restart behavior still need visible checks. Arbitrary
+execution/transfers and cleanup remain disabled.
 
 ## Walkthrough
 

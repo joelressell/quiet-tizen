@@ -144,6 +144,10 @@ def main(argv=None):
     preview_launch.add_argument("name", help="Verified backup phase name")
     preview_restore = sub.add_parser("preview-restore", help="Restore the original launcher after preview")
     preview_restore.add_argument("name", help="Verified backup phase name")
+    home_route = sub.add_parser("home-route", help="Assign the visibly tested Quiet Home to Home/startup")
+    home_route.add_argument("name", help="Verified backup phase name")
+    home_restore = sub.add_parser("home-restore", help="Restore original Home/startup selectors")
+    home_restore.add_argument("name", help="Verified backup phase name")
     run = sub.add_parser("exec", help="Execute one reviewed command or short script using temporary root")
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--command")
@@ -161,7 +165,8 @@ def main(argv=None):
     require_operation(profile, args.action)
     if args.action != "doctor" or args.profile is not None:
         check_identity(profile["model"], args.firmware, profile)
-    if args.action in ("snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.name):
+    if args.action in ("snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore",
+                       "home-route", "home-restore") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.name):
         raise ValueError("Use a simple backup phase name without directory components.")
     if args.action == "source-probe" and not (ROOT / ".local/build/Probe/Probe.dll").is_file():
         raise ValueError("Build the read-only Probe.dll locally before source-probe.")
@@ -177,7 +182,7 @@ def main(argv=None):
                         for name in BACKUP_FILES}
         if any(destination.exists() for destination in destinations.values()):
             raise ValueError("A backup file already exists locally; preserve and inspect it before retrying.")
-    if args.action in ("preview-install", "preview-launch", "preview-restore"):
+    if args.action in ("preview-install", "preview-launch", "preview-restore", "home-route", "home-restore"):
         backup_dir = ROOT / ".local/backups" / args.name
         if not all((backup_dir / name).is_file() for name in BACKUP_FILES):
             raise ValueError("Copy and verify the fixed backup files before launcher preview.")
@@ -249,7 +254,7 @@ def main(argv=None):
         commands = (f"printf '%s' {shlex.quote(encoded)} | base64 -d | /bin/sh -s -- {shlex.quote(args.name)}",)
     elif args.action == "backup-pull":
         commands = ()
-    elif args.action in ("preview-install", "preview-restore"):
+    elif args.action in ("preview-install", "preview-restore", "home-route", "home-restore"):
         commands = ()
     elif args.action == "pull":
         private_path(args.local)
@@ -280,10 +285,17 @@ def main(argv=None):
                       ("restore-preview.sh", normalized_script_bytes(ROOT / "recipes/restore-preview.sh")))
                      if args.action == "preview-install" else
                      (("restore-preview.sh", normalized_script_bytes(ROOT / "recipes/restore-preview.sh")),)
-                     if args.action == "preview-restore" else (),
+                     if args.action == "preview-restore" else
+                     (("route-home.sh", normalized_script_bytes(ROOT / "recipes/route-home.sh")),
+                      ("restore-home-route.sh", normalized_script_bytes(ROOT / "recipes/restore-home-route.sh")))
+                     if args.action == "home-route" else
+                     (("restore-home-route.sh", normalized_script_bytes(ROOT / "recipes/restore-home-route.sh")),)
+                     if args.action == "home-restore" else (),
         run_staged=("Probe.dll",) if args.action == "source-probe" else (),
         run_staged_shell=(("install-launcher.sh", args.name) if args.action == "preview-install"
                           else ("restore-preview.sh", args.name) if args.action == "preview-restore"
+                          else ("route-home.sh", args.name) if args.action == "home-route"
+                          else ("restore-home-route.sh", args.name) if args.action == "home-restore"
                           else None),
     ))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -317,7 +329,7 @@ def main(argv=None):
         print(f"Fixed TV backup phase saved: {args.name}. Private session: {log.relative_to(ROOT)}")
         print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
         return
-    if args.action in ("preview-install", "preview-restore"):
+    if args.action in ("preview-install", "preview-restore", "home-route", "home-restore"):
         print(f"{args.action} completed. Inspect the TV and private session: {log.relative_to(ROOT)}")
         print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
         return

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate reviewed apply/restore SQL from YOUR fresh, consistent registry snapshot."""
 import argparse
+from contextlib import closing
 import json
 from pathlib import Path
 import re
@@ -31,7 +32,7 @@ def validate_id(app_id):
 
 def read_rows(database, ids):
     # Read only. A caller must use SQLite's .backup, never copy a live WAL database.
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
         if conn.execute("PRAGMA quick_check").fetchone() != ("ok",):
             raise ValueError("Snapshot integrity check failed.")
         rows = []

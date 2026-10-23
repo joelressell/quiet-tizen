@@ -73,6 +73,12 @@ The **generalized scripts in this public release were checked locally and
 compiled where applicable; they have not been replayed end-to-end on a second
 TV**. This matters especially for private Samsung APIs and registry schemas.
 
+**QN75QN85DDFXZA / T-PTMDAKUC-0090-2130.0:** a separate inventory-only profile
+and diagnostic report are available. Start with the [QN85DD guide](docs/10-qn85dd.md).
+Root, launcher installation, and cleanup remain unverified on this model and
+are disabled for that profile. Its diagnostic requires Python and Samsung's
+SDB; no launcher or root-payload build is needed for this first check.
+
 ## Walkthrough
 
 1. [Understand compatibility and inventory the TV](docs/01-inventory.md).

@@ -1,0 +1,37 @@
+{
+  "profile_version": 1,
+  "support_status": "inventory-only",
+  "model": "QN75QN85DDFXZA",
+  "firmware": "T-PTMDAKUC-0090-2130.0",
+  "identity_evidence": "Owner About TV screen",
+  "os": null,
+  "kernel": null,
+  "runtime": null,
+  "registry": null,
+  "groups": {},
+  "stop_markers": [],
+  "runtime_only_masks": [],
+  "preferences": [],
+  "was_cache": null,
+  "diagnostic_transport": {
+    "max_inline_bytes": 400,
+    "reason": "Conservative transport limit informed by related S90D lab observations; not a measured limit or compatibility proof for this TV."
+  },
+  "related_device_evidence": [
+    {
+      "model": "QN55S90DAFXZA",
+      "firmware": "T-PTMDAKUC-0090-2130.0",
+      "finding": "The upstream compatibility table reports a successful SDK archive-root route on this different model. This does not validate access, launcher installation, or cleanup on QN75QN85DDFXZA.",
+      "sources": [
+        "https://github.com/chris-ritsen/samsung-tv-root",
+        "https://github.com/splitcipher/couchroot/blob/main/docs/lab/devices/s90d/persistence.md"
+      ]
+    }
+  ],
+  "notes": [
+    "Only model and main firmware identity have been observed on this TV. No on-device diagnostic, root, launcher, cleanup, or reboot test has been completed.",
+    "Determine the installed operating system, architecture, runtime, app containers, native interfaces, input mappings, and registry schemas from this device before enabling operational support.",
+    "The 0090 firmware component and related-model findings do not establish this TV's runtime or native API compatibility.",
+    "Diagnostic collection does not obtain root or change persistent configuration. Its SDB transport can create temporary files and directories."
+  ]
+}

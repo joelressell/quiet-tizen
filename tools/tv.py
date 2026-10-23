@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit-target access for the documented U8000F profile. See docs/02-access.md."""
+"""Profile-specific TV diagnostics and access. See docs/02-access.md."""
 import argparse
 import asyncio
 import base64
@@ -16,10 +16,12 @@ from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "vendor"))
-from samsung_tv_root.archive_root import probe, _check_target, _capture
+from samsung_tv_root.archive_root import probe, _capture
 from samsung_tv_root.sdb import SdbClient, find_sdb
+from device_profiles import DEFAULT_PROFILE_PATH, load_profile, check_profile_identity, require_operation
+from diagnostics import collect_diagnostics
 
-PROFILE = json.loads((ROOT / "profiles/un75u8000ffxza-1300.9.json").read_text())
+PROFILE = load_profile()
 STAGE = "/home/owner/share/tmp/sdk_tools/quiet-tizen"
 
 
@@ -48,12 +50,8 @@ def observed_model(client):
     return rows[0][-1]
 
 
-def check_identity(model, firmware):
-    if model != PROFILE["model"]:
-        raise ValueError(f"Unsupported model {model!r}; stop and investigate a separate profile.")
-    if firmware != PROFILE["firmware"]:
-        raise ValueError("Supply --firmware with the exact version read from About This TV. "
-                         "Only the documented build is accepted. Do not guess this value.")
+def check_identity(model, firmware, profile=None):
+    check_profile_identity(PROFILE if profile is None else profile, model, firmware)
 
 
 def pull_command(remote):
@@ -84,15 +82,17 @@ def decode_pull(stdout):
     return data
 
 
-def main():
+def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, help="The owner's TV IPv4 address; never auto-discovered")
+    parser.add_argument("--profile", type=Path, help="Exact model/firmware profile JSON; default is the U8000F case study")
     parser.add_argument("--firmware", help="Operator-verified version from the TV's About screen")
     parser.add_argument("--sdb", help="Path to Samsung's separately installed SDB")
     parser.add_argument("--callback-host", help="This computer's LAN IPv4 if route detection is wrong")
     sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("doctor", help="Read SDB identity and archive-route capabilities; does not obtain root")
+    doctor = sub.add_parser("doctor", help="Collect fixed non-root compatibility observations")
+    doctor.add_argument("--report", type=Path, help="Save a diagnostic JSON report below .local/")
     sub.add_parser("root-check", help="Temporarily obtain root and run id; no configuration changes")
     run = sub.add_parser("exec", help="Execute one reviewed command or short script using temporary root")
     source = run.add_mutually_exclusive_group(required=True)
@@ -105,23 +105,42 @@ def main():
     push = sub.add_parser("push", help="Upload one file to the SDK staging directory, not to system paths")
     push.add_argument("local", type=Path)
     push.add_argument("name", help="Simple staging filename")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    profile = load_profile(args.profile or DEFAULT_PROFILE_PATH)
+    # A model name alone never enables operations on an inventory-only profile.
+    # Reject unsupported operations before locating SDB or connecting to the TV.
+    require_operation(profile, args.action)
+    if args.action != "doctor" or args.profile is not None:
+        check_identity(profile["model"], args.firmware, profile)
+    if args.action == "doctor" and args.report:
+        private_path(args.report)
     ipaddress.IPv4Address(args.host)
     if args.callback_host:
         ipaddress.IPv4Address(args.callback_host)
     if args.sdb:
         os.environ["SDB"] = str(Path(args.sdb).expanduser().resolve())
-    client = SdbClient(find_sdb(), args.host, timeout=15)
+    transport = profile.get("diagnostic_transport", {}) if args.action == "doctor" else {}
+    client = SdbClient(find_sdb(), args.host, timeout=15,
+                       max_appinstall_bytes=transport.get("max_inline_bytes", 510))
     model = observed_model(client)
     print("SDB model:", model)
     if args.action == "doctor":
-        assessment = _check_target(client)
-        print("Archive-route runtime family:", assessment.runtime)
-        print(assessment.capabilities)
-        print(_capture(client, "uname -srmo; readlink -f /usr/share/dotnet.tizen/netcoreapp"))
-        print("Preflight only. Firmware must be read on the TV; root is not yet confirmed.")
-        return
-    check_identity(model, args.firmware)
+        if args.profile is not None:
+            check_identity(model, args.firmware, profile)
+        report = collect_diagnostics(client, profile, model, args.firmware, args.callback_host)
+        print("Profile status:", profile["support_status"])
+        print("Archive prerequisites:", report["archive_prerequisites"])
+        for name, result in report["checks"].items():
+            print(f"  {name}: {result['status']}" +
+                  (f" ({result['reason']})" if "reason" in result else ""))
+        if args.report:
+            save_private(args.report, (json.dumps(report, indent=2) + "\n").encode())
+            print(f"Diagnostic report: {args.report.resolve().relative_to(ROOT)}")
+        else:
+            print(json.dumps(report, indent=2))
+        print("Diagnostic observations only. Root, launcher and cleanup have not been tested by this command.")
+        return 0 if report["archive_prerequisites"] == "observed_not_root_proof" else 2
+    check_identity(model, args.firmware, profile)
     if args.action == "push":
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", args.name):
             raise ValueError("Use a simple staging filename without directory components.")
@@ -178,7 +197,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as error:

@@ -46,10 +46,13 @@ class DeviceProfileTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     check_profile_identity(self.candidate, model, firmware)
 
-    def test_candidate_contains_no_assumed_runtime_or_mutation_targets(self):
-        for field in ("os", "kernel", "runtime", "registry", "was_cache"):
+    def test_candidate_records_preflight_without_mutation_targets(self):
+        for field in ("os", "was_cache"):
             with self.subTest(field=field):
                 self.assertIsNone(self.candidate[field])
+        self.assertEqual(self.candidate["kernel"], "Linux 5.4.249 armv7l")
+        self.assertEqual(self.candidate["runtime"], "6.0.9")
+        self.assertEqual(self.candidate["registry"], "/opt/dbspace/.pkgmgr_parser.db")
         self.assertEqual(self.candidate["groups"], {})
         for field in ("stop_markers", "runtime_only_masks", "preferences"):
             self.assertEqual(self.candidate[field], [])

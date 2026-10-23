@@ -5,9 +5,9 @@
   "firmware": "T-PTMDAKUC-0090-2130.0",
   "identity_evidence": "Owner About TV screen",
   "os": null,
-  "kernel": null,
-  "runtime": null,
-  "registry": null,
+  "kernel": "Linux 5.4.249 armv7l",
+  "runtime": "6.0.9",
+  "registry": "/opt/dbspace/.pkgmgr_parser.db",
   "groups": {},
   "stop_markers": [],
   "runtime_only_masks": [],
@@ -29,9 +29,9 @@
     }
   ],
   "notes": [
-    "Only model and main firmware identity have been observed on this TV. No on-device diagnostic, root, launcher, cleanup, or reboot test has been completed.",
-    "Determine the installed operating system, architecture, runtime, app containers, native interfaces, input mappings, and registry schemas from this device before enabling operational support.",
-    "The 0090 firmware component and related-model findings do not establish this TV's runtime or native API compatibility.",
+    "Model and main firmware came from the owner's About TV screen. The non-root diagnostic ran on this TV on 2026-10-23; temporary root, launcher, cleanup, and reboot behavior remain untested.",
+    "The diagnostic observed Linux 5.4.249 armv7l, Microsoft.NETCore.App 6.0.9 through resolved CLR files, the package registry path and selected schemas. The installed Tizen version and ARM ABI remain unverified.",
+    "Candidate application and native-library file presence does not establish API behavior, Home routing, HDMI mappings, installed app IDs, or cleanup safety.",
     "Diagnostic collection does not obtain root or change persistent configuration. Its SDB transport can create temporary files and directories."
   ]
 }

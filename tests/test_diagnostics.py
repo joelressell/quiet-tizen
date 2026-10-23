@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -53,7 +53,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse(report["root_tested"])
         self.assertFalse(report["launcher_tested"])
         self.assertFalse(report["cleanup_tested"])
-        self.assertEqual(report["profile"]["support_status"], "inventory-only")
+        self.assertEqual(report["profile"]["support_status"], "access-validated")
         self.assertTrue(report["identity"]["matches_profile"])
         for call in self.client.capture.call_args_list:
             self.assertEqual(call.kwargs["callback_host"], "192.0.2.20")
@@ -118,18 +118,92 @@ class DiagnosticsTests(unittest.TestCase):
             capture_text(self.client, "uname -srmo")
 
     def test_candidate_operations_stop_before_network_or_staging(self):
-        operations = (("root-check",), ("exec", "--command", "id"),
-                      ("push", "missing.tar", "package.tar"),
+        operations = (("exec", "--command", "id"), ("push", "missing.tar", "package.tar"),
                       ("pull", "/example", ".local/example"))
         for operation in operations:
             with self.subTest(operation=operation), patch("tv.find_sdb") as find, \
                     patch("tv.SdbClient") as client, patch("tv.probe") as probe:
-                with self.assertRaisesRegex(ValueError, "inventory-only"):
+                with self.assertRaisesRegex(ValueError, "access-validated"):
                     tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
                              "--firmware", self.profile["firmware"], *operation])
                 find.assert_not_called()
                 client.assert_not_called()
                 probe.assert_not_called()
+
+    def test_candidate_root_check_forwards_conservative_transport_limit(self):
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "commands": [{"stdout": "uid=0(root)\n", "stderr": "", "exit_code": 0,
+                                "timed_out": False}]}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("tv.ROOT", Path(directory)), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                tv.main(["--host", "192.0.2.10", "--callback-host", "192.0.2.20",
+                         "--profile", str(CANDIDATE_PATH), "--firmware", self.profile["firmware"],
+                         "root-check"])
+            self.assertEqual(probe.call_args.kwargs["max_appinstall_bytes"], 400)
+            self.assertEqual(probe.call_args.kwargs["commands"], ("id",))
+
+    def test_fixed_inventory_is_private_and_still_requires_clean_root_exit(self):
+        from root_inventory import ROOT_INVENTORY_COMMANDS
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "commands": [{"stdout": "PRIVATE-APP", "stderr": "", "exit_code": 0,
+                                "timed_out": False} for _ in ROOT_INVENTORY_COMMANDS]}
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with patch("tv.ROOT", Path(directory)), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(output):
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "inventory"])
+            self.assertEqual(probe.call_args.kwargs["commands"],
+                             tuple(command for _, command in ROOT_INVENTORY_COMMANDS))
+            self.assertNotIn("PRIVATE-APP", output.getvalue())
+            self.assertEqual(len(list((Path(directory) / ".local/sessions").glob("*.json"))), 1)
+
+    def test_framework_pull_uses_only_fixed_paths_and_private_destination(self):
+        from root_inventory import FRAMEWORK_FILES
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "private_files": [{"name": name, "size_bytes": 1, "sha256": "0" * 64}
+                                    for name in FRAMEWORK_FILES]}
+        with tempfile.TemporaryDirectory() as directory:
+            client = Mock(spec=SdbClient)
+            with patch("tv.ROOT", Path(directory)), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient", return_value=client), \
+                    patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "framework-pull"])
+            client.pull.assert_not_called()
+            self.assertEqual(probe.call_args.kwargs["read_files"], tuple(FRAMEWORK_FILES.items()))
+            self.assertEqual(probe.call_args.kwargs["output_dir"], Path(directory) / ".local/tv-framework")
+
+    def test_source_probe_stages_only_built_probe_and_keeps_output_private(self):
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "commands": [{"stdout": "PRIVATE_SOURCE", "stderr": "", "exit_code": 0,
+                                "timed_out": False}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            built = root / ".local/build/Probe/Probe.dll"
+            built.parent.mkdir(parents=True)
+            built.write_bytes(b"synthetic probe")
+            output = io.StringIO()
+            with patch("tv.ROOT", root), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(output):
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "source-probe"])
+            self.assertEqual(probe.call_args.kwargs["staged_files"], (("Probe.dll", built),))
+            self.assertEqual(probe.call_args.kwargs["run_staged"], ("Probe.dll",))
+            self.assertNotIn("PRIVATE_SOURCE", output.getvalue())
 
     def test_explicit_doctor_identity_mismatch_stops_before_diagnostic_commands(self):
         with patch("tv.find_sdb", return_value=Path("sdb")), patch("tv.SdbClient"), \

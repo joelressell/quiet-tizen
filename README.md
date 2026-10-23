@@ -73,11 +73,13 @@ The **generalized scripts in this public release were checked locally and
 compiled where applicable; they have not been replayed end-to-end on a second
 TV**. This matters especially for private Samsung APIs and registry schemas.
 
-**QN75QN85DDFXZA / T-PTMDAKUC-0090-2130.0:** a separate inventory-only profile
-and diagnostic report are available. Start with the [QN85DD guide](docs/10-qn85dd.md).
-Root, launcher installation, and cleanup remain unverified on this model and
-are disabled for that profile. Its diagnostic requires Python and Samsung's
-SDB; no launcher or root-payload build is needed for this first check.
+**QN75QN85DDFXZA / T-PTMDAKUC-0090-2130.0:** a separate device profile and
+diagnostic report are available. Start with the [QN85DD guide](docs/10-qn85dd.md).
+The non-root preflight and a temporary authenticated root identity check have
+passed on this TV. Fixed read-only root inventory and a source/Home probe ran;
+matching private framework references were transferred and the launcher built
+locally. Launcher installation, arbitrary execution/transfers, and cleanup
+remain disabled.
 
 ## Walkthrough
 

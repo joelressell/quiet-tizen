@@ -6,8 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE_PATH = ROOT / "profiles/un75u8000ffxza-1300.9.json"
-SUPPORT_STATUSES = frozenset(("case-study", "inventory-only"))
-OPERATIONS = frozenset(("doctor", "root-check", "push", "pull", "exec", "cleanup"))
+SUPPORT_STATUSES = frozenset(("case-study", "inventory-only", "access-evaluation", "access-validated"))
+OPERATIONS = frozenset(("doctor", "root-check", "inventory", "framework-pull", "source-probe",
+                        "push", "pull", "exec", "cleanup"))
 
 
 def _validate_profile(profile):
@@ -23,7 +24,7 @@ def _validate_profile(profile):
             raise ValueError(f"Profile {field} must be a nonempty, exact single-line string.")
     status = profile.get("support_status")
     if not isinstance(status, str) or status not in SUPPORT_STATUSES:
-        raise ValueError("Profile support_status must be 'case-study' or 'inventory-only'.")
+        raise ValueError("Unknown profile support_status.")
     transport = profile.get("diagnostic_transport")
     if transport is not None:
         if not isinstance(transport, dict):
@@ -55,13 +56,20 @@ def check_profile_identity(profile, model, firmware):
 
 
 def require_operation(profile, operation):
-    """Inventory evidence alone never enables root, deployment, or cleanup."""
+    """Permit only operations established by this profile's evidence stage."""
     _validate_profile(profile)
     if not isinstance(operation, str) or operation not in OPERATIONS:
         raise ValueError(f"Unknown profile operation: {operation!r}.")
-    if operation != "doctor" and profile["support_status"] != "case-study":
+    status = profile["support_status"]
+    allowed = {
+        "inventory-only": {"doctor"},
+        "access-evaluation": {"doctor", "root-check"},
+        "access-validated": {"doctor", "root-check", "inventory", "framework-pull", "source-probe"},
+        "case-study": OPERATIONS,
+    }[status]
+    if operation not in allowed:
         raise ValueError(
-            f"Profile {profile['model']} / {profile['firmware']} is inventory-only. "
-            f"Operation {operation!r} requires verified device-specific support. "
-            "Run doctor and review the compatibility evidence first."
+            f"Profile {profile['model']} / {profile['firmware']} is {status}. "
+            f"Operation {operation!r} requires a supported evaluation stage. "
+            "Inventory and access checks do not authorize transfers, arbitrary execution, or cleanup."
         )

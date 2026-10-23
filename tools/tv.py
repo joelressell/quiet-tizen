@@ -20,6 +20,7 @@ from samsung_tv_root.archive_root import probe, _capture
 from samsung_tv_root.sdb import SdbClient, find_sdb
 from device_profiles import DEFAULT_PROFILE_PATH, load_profile, check_profile_identity, require_operation
 from diagnostics import collect_diagnostics
+from root_inventory import FRAMEWORK_FILES, ROOT_INVENTORY_COMMANDS
 
 PROFILE = load_profile()
 STAGE = "/home/owner/share/tmp/sdk_tools/quiet-tizen"
@@ -94,6 +95,9 @@ def main(argv=None):
     doctor = sub.add_parser("doctor", help="Collect fixed non-root compatibility observations")
     doctor.add_argument("--report", type=Path, help="Save a diagnostic JSON report below .local/")
     sub.add_parser("root-check", help="Temporarily obtain root and run id; no configuration changes")
+    sub.add_parser("inventory", help="Save fixed read-only root inventory under .local/")
+    sub.add_parser("framework-pull", help="Copy four fixed TV framework references privately")
+    sub.add_parser("source-probe", help="Run the built read-only source and Home probe")
     run = sub.add_parser("exec", help="Execute one reviewed command or short script using temporary root")
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--command")
@@ -107,11 +111,12 @@ def main(argv=None):
     push.add_argument("name", help="Simple staging filename")
     args = parser.parse_args(argv)
     profile = load_profile(args.profile or DEFAULT_PROFILE_PATH)
-    # A model name alone never enables operations on an inventory-only profile.
     # Reject unsupported operations before locating SDB or connecting to the TV.
     require_operation(profile, args.action)
     if args.action != "doctor" or args.profile is not None:
         check_identity(profile["model"], args.firmware, profile)
+    if args.action == "source-probe" and not (ROOT / ".local/build/Probe/Probe.dll").is_file():
+        raise ValueError("Build the read-only Probe.dll locally before source-probe.")
     if args.action == "doctor" and args.report:
         private_path(args.report)
     ipaddress.IPv4Address(args.host)
@@ -119,14 +124,20 @@ def main(argv=None):
         ipaddress.IPv4Address(args.callback_host)
     if args.sdb:
         os.environ["SDB"] = str(Path(args.sdb).expanduser().resolve())
-    transport = profile.get("diagnostic_transport", {}) if args.action == "doctor" else {}
+    transport = profile.get("diagnostic_transport", {})
+    max_inline_bytes = transport.get("max_inline_bytes", 510)
     client = SdbClient(find_sdb(), args.host, timeout=15,
-                       max_appinstall_bytes=transport.get("max_inline_bytes", 510))
+                       max_appinstall_bytes=max_inline_bytes)
     model = observed_model(client)
     print("SDB model:", model)
+    if args.action != "doctor" or args.profile is not None:
+        check_identity(model, args.firmware, profile)
+    if args.action == "framework-pull":
+        destinations = {name: private_path(ROOT / ".local/tv-framework" / name)
+                        for name in FRAMEWORK_FILES}
+        if any(destination.exists() for destination in destinations.values()):
+            raise ValueError("A framework reference already exists; preserve and inspect it before retrying.")
     if args.action == "doctor":
-        if args.profile is not None:
-            check_identity(model, args.firmware, profile)
         report = collect_diagnostics(client, profile, model, args.firmware, args.callback_host)
         print("Profile status:", profile["support_status"])
         print("Archive prerequisites:", report["archive_prerequisites"])
@@ -140,7 +151,6 @@ def main(argv=None):
             print(json.dumps(report, indent=2))
         print("Diagnostic observations only. Root, launcher and cleanup have not been tested by this command.")
         return 0 if report["archive_prerequisites"] == "observed_not_root_proof" else 2
-    check_identity(model, args.firmware, profile)
     if args.action == "push":
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", args.name):
             raise ValueError("Use a simple staging filename without directory components.")
@@ -156,23 +166,35 @@ def main(argv=None):
         print(f"Verified staging file: {remote}. Remove it after deployment.")
         return
     if args.action == "root-check":
-        command = "id"
+        commands = ("id",)
+    elif args.action == "inventory":
+        commands = tuple(command for _, command in ROOT_INVENTORY_COMMANDS)
+    elif args.action == "framework-pull":
+        commands = ()
+    elif args.action == "source-probe":
+        commands = ()
     elif args.action == "pull":
         private_path(args.local)
-        command = pull_command(args.remote)
+        commands = (pull_command(args.remote),)
     elif args.script:
         script = args.script.read_bytes()
         if len(script) > 45000:
             raise ValueError("Script too large for the bounded command channel; split into phases.")
         encoded = base64.b64encode(script).decode()
-        command = f"printf '%s' {shlex.quote(encoded)} | /bin/sh -s -- " + shlex.join(args.arg)
+        commands = (f"printf '%s' {shlex.quote(encoded)} | /bin/sh -s -- " + shlex.join(args.arg),)
     else:
         if args.arg:
             raise ValueError("--arg requires --script.")
-        command = args.command
+        commands = (args.command,)
     result = asyncio.run(probe(
         args.host, model=model, callback_host=args.callback_host,
-        payloads=ROOT / ".local/build/payloads", commands=(command,), command_timeout=30,
+        payloads=ROOT / ".local/build/payloads", commands=commands, command_timeout=30,
+        max_appinstall_bytes=max_inline_bytes,
+        read_files=tuple(FRAMEWORK_FILES.items()) if args.action == "framework-pull" else (),
+        output_dir=ROOT / ".local/tv-framework" if args.action == "framework-pull" else None,
+        staged_files=(("Probe.dll", ROOT / ".local/build/Probe/Probe.dll"),)
+                     if args.action == "source-probe" else (),
+        run_staged=("Probe.dll",) if args.action == "source-probe" else (),
     ))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     log = ROOT / ".local/sessions" / f"{stamp}.json"
@@ -181,12 +203,27 @@ def main(argv=None):
         raise ValueError("The callback did not prove UID/EUID 0.")
     if not result.get("system_files_unchanged") or not result.get("staging_cleaned"):
         raise ValueError("Root session cleanup checks failed; inspect the private session log.")
+    for index, response in enumerate(result.get("commands", [])):
+        if response["exit_code"] or response["timed_out"]:
+            raise RuntimeError(f"Command {index + 1} failed ({response['exit_code']}, "
+                               f"timeout={response['timed_out']}). Private log: {log.relative_to(ROOT)}")
+    if args.action == "inventory":
+        print(f"Fixed read-only inventory saved privately: {log.relative_to(ROOT)}")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
+    if args.action == "framework-pull":
+        if len(result.get("private_files", [])) != len(FRAMEWORK_FILES):
+            raise ValueError("Framework transfer evidence is incomplete; inspect the private session log.")
+        print("Four checksum-verified framework references saved under .local/tv-framework/.")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
+    if args.action == "source-probe":
+        print(f"Read-only Home/source probe saved privately: {log.relative_to(ROOT)}")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
     response = result["commands"][0]
     if response["stderr"]:
         print(response["stderr"], file=sys.stderr, end="")
-    if response["exit_code"] or response["timed_out"]:
-        raise RuntimeError(f"Command failed ({response['exit_code']}, timeout={response['timed_out']}). "
-                           f"Private log: {log.relative_to(ROOT)}")
     if args.action == "pull":
         save_private(args.local, decode_pull(response["stdout"]))
         print("Verified file saved inside .local/.")

@@ -43,13 +43,15 @@ private local storage, bounded checksum-verified file transfer and reviewed
 single-command execution. Those generalized conveniences were locally
 tested; they are not a claim of end-to-end testing on additional hardware.
 
-The QN85DD extension adds an inventory-only profile and fixed diagnostic
+The QN85DD extension began with an inventory-only profile and fixed diagnostic
 commands for runtime, capabilities, candidate files, and selected configuration
 schemas. Diagnostics run without root and can use temporary SDB script staging
 and gate directories. Their structured report retains compatibility fields
 instead of raw logs or private device/network/account identifiers. Partial
-checks remain explicit. No QN85DD hardware execution or launcher verification
-has been performed; see the [QN85DD guide](10-qn85dd.md).
+checks remain explicit. A subsequent temporary root identity check passed on
+the QN85DD; its access-validated stage permits fixed read-only root inventory,
+framework-reference retrieval, and the source/Home Probe, while deployment
+and cleanup stay disabled. See the [QN85DD guide](10-qn85dd.md).
 
 ## Launcher and design
 

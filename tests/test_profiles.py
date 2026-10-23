@@ -22,16 +22,21 @@ class DeviceProfileTests(unittest.TestCase):
         self.assertEqual(DEFAULT_PROFILE_PATH.name, "un75u8000ffxza-1300.9.json")
         self.assertEqual(self.original["support_status"], "case-study")
         check_profile_identity(self.original, "UN75U8000FFXZA", "T-KSU2EFAKUC-0090-1300.9")
-        for operation in ("doctor", "root-check", "push", "pull", "exec", "cleanup"):
+        for operation in ("doctor", "root-check", "inventory", "framework-pull", "source-probe",
+                          "push", "pull", "exec", "cleanup"):
             with self.subTest(operation=operation):
                 require_operation(self.original, operation)
 
-    def test_exact_candidate_identity_does_not_enable_operational_support(self):
+    def test_exact_candidate_identity_only_enables_fixed_access_inventory(self):
         check_profile_identity(self.candidate, "QN75QN85DDFXZA", "T-PTMDAKUC-0090-2130.0")
         require_operation(self.candidate, "doctor")
-        for operation in ("root-check", "push", "pull", "exec", "cleanup"):
+        require_operation(self.candidate, "root-check")
+        require_operation(self.candidate, "inventory")
+        require_operation(self.candidate, "framework-pull")
+        require_operation(self.candidate, "source-probe")
+        for operation in ("push", "pull", "exec", "cleanup"):
             with self.subTest(operation=operation):
-                with self.assertRaisesRegex(ValueError, "inventory-only"):
+                with self.assertRaisesRegex(ValueError, "access-validated"):
                     require_operation(self.candidate, operation)
 
     def test_identity_does_not_accept_related_models_or_normalize_firmware(self):
@@ -47,12 +52,14 @@ class DeviceProfileTests(unittest.TestCase):
                     check_profile_identity(self.candidate, model, firmware)
 
     def test_candidate_records_preflight_without_mutation_targets(self):
-        for field in ("os", "was_cache"):
+        for field in ("was_cache",):
             with self.subTest(field=field):
                 self.assertIsNone(self.candidate[field])
+        self.assertEqual(self.candidate["os"], "Tizen 9.0.0")
         self.assertEqual(self.candidate["kernel"], "Linux 5.4.249 armv7l")
         self.assertEqual(self.candidate["runtime"], "6.0.9")
         self.assertEqual(self.candidate["registry"], "/opt/dbspace/.pkgmgr_parser.db")
+        self.assertEqual(self.candidate["temporary_root_evidence"]["authenticated_uid_euid"], [0, 0])
         self.assertEqual(self.candidate["groups"], {})
         for field in ("stop_markers", "runtime_only_masks", "preferences"):
             self.assertEqual(self.candidate[field], [])

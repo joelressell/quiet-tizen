@@ -23,7 +23,7 @@ class DeviceProfileTests(unittest.TestCase):
         self.assertEqual(self.original["support_status"], "case-study")
         check_profile_identity(self.original, "UN75U8000FFXZA", "T-KSU2EFAKUC-0090-1300.9")
         for operation in ("doctor", "root-check", "inventory", "framework-pull", "source-probe",
-                          "push", "pull", "exec", "cleanup"):
+                          "snapshot", "backup-pull", "push", "pull", "exec", "cleanup"):
             with self.subTest(operation=operation):
                 require_operation(self.original, operation)
 
@@ -34,9 +34,14 @@ class DeviceProfileTests(unittest.TestCase):
         require_operation(self.candidate, "inventory")
         require_operation(self.candidate, "framework-pull")
         require_operation(self.candidate, "source-probe")
+        require_operation(self.candidate, "snapshot")
+        require_operation(self.candidate, "backup-pull")
+        require_operation(self.candidate, "preview-install")
+        require_operation(self.candidate, "preview-launch")
+        require_operation(self.candidate, "preview-restore")
         for operation in ("push", "pull", "exec", "cleanup"):
             with self.subTest(operation=operation):
-                with self.assertRaisesRegex(ValueError, "access-validated"):
+                with self.assertRaisesRegex(ValueError, "backup-validated"):
                     require_operation(self.candidate, operation)
 
     def test_identity_does_not_accept_related_models_or_normalize_firmware(self):

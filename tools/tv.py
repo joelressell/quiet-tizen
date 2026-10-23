@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import sys
+import tarfile
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +21,7 @@ from samsung_tv_root.archive_root import probe, _capture
 from samsung_tv_root.sdb import SdbClient, find_sdb
 from device_profiles import DEFAULT_PROFILE_PATH, load_profile, check_profile_identity, require_operation
 from diagnostics import collect_diagnostics
-from root_inventory import FRAMEWORK_FILES, ROOT_INVENTORY_COMMANDS
+from root_inventory import BACKUP_FILES, FRAMEWORK_FILES, ROOT_INVENTORY_COMMANDS
 
 PROFILE = load_profile()
 STAGE = "/home/owner/share/tmp/sdk_tools/quiet-tizen"
@@ -83,6 +84,41 @@ def decode_pull(stdout):
     return data
 
 
+def normalized_script_bytes(path):
+    """Normalize Windows checkout line endings before piping a shell script to the TV."""
+    script = Path(path).read_bytes().replace(b"\r\n", b"\n")
+    if b"\r" in script or len(script) > 45000:
+        raise ValueError("Script has unsupported line endings or exceeds the command limit.")
+    return script
+
+
+def encoded_script(path):
+    return base64.b64encode(normalized_script_bytes(path)).decode()
+
+
+def verify_package_archive(archive_path):
+    """Refuse a stale or unexpected preview package before touching the TV."""
+    package_dir = ROOT / ".local/package"
+    required = ("BixbyPromotion.dll", "Probe.dll", "quiet-home/apps.json",
+                "quiet-home/home-layout.json")
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            if (member.name.startswith("/") or ".." in PurePosixPath(member.name).parts
+                    or not (member.isfile() or member.isdir())):
+                raise ValueError("Preview package contains an unsafe archive entry.")
+        for name in required:
+            local = package_dir / name
+            if not local.is_file():
+                raise ValueError(f"Missing built preview file: {name}")
+            try:
+                member = archive.getmember("./" + name)
+            except KeyError as error:
+                raise ValueError(f"Preview archive lacks {name}") from error
+            stream = archive.extractfile(member)
+            if stream is None or hashlib.sha256(stream.read()).digest() != hashlib.sha256(local.read_bytes()).digest():
+                raise ValueError(f"Preview archive differs from current build: {name}")
+
+
 def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -98,6 +134,16 @@ def main(argv=None):
     sub.add_parser("inventory", help="Save fixed read-only root inventory under .local/")
     sub.add_parser("framework-pull", help="Copy four fixed TV framework references privately")
     sub.add_parser("source-probe", help="Run the built read-only source and Home probe")
+    snapshot = sub.add_parser("snapshot", help="Save fixed SQLite and launcher backups on the TV")
+    snapshot.add_argument("name", help="Unique backup phase name")
+    backup_pull = sub.add_parser("backup-pull", help="Copy fixed TV backup files into .local/")
+    backup_pull.add_argument("name", help="Existing backup phase name")
+    preview_install = sub.add_parser("preview-install", help="Install Quiet Home for visible testing without Home routing")
+    preview_install.add_argument("name", help="Verified backup phase name")
+    preview_launch = sub.add_parser("preview-launch", help="Launch the installed preview again for visible testing")
+    preview_launch.add_argument("name", help="Verified backup phase name")
+    preview_restore = sub.add_parser("preview-restore", help="Restore the original launcher after preview")
+    preview_restore.add_argument("name", help="Verified backup phase name")
     run = sub.add_parser("exec", help="Execute one reviewed command or short script using temporary root")
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--command")
@@ -115,10 +161,31 @@ def main(argv=None):
     require_operation(profile, args.action)
     if args.action != "doctor" or args.profile is not None:
         check_identity(profile["model"], args.firmware, profile)
+    if args.action in ("snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.name):
+        raise ValueError("Use a simple backup phase name without directory components.")
     if args.action == "source-probe" and not (ROOT / ".local/build/Probe/Probe.dll").is_file():
         raise ValueError("Build the read-only Probe.dll locally before source-probe.")
     if args.action == "doctor" and args.report:
         private_path(args.report)
+    if args.action == "framework-pull":
+        destinations = {name: private_path(ROOT / ".local/tv-framework" / name)
+                        for name in FRAMEWORK_FILES}
+        if any(destination.exists() for destination in destinations.values()):
+            raise ValueError("A framework reference already exists; preserve and inspect it before retrying.")
+    if args.action == "backup-pull":
+        destinations = {name: private_path(ROOT / ".local/backups" / args.name / name)
+                        for name in BACKUP_FILES}
+        if any(destination.exists() for destination in destinations.values()):
+            raise ValueError("A backup file already exists locally; preserve and inspect it before retrying.")
+    if args.action in ("preview-install", "preview-launch", "preview-restore"):
+        backup_dir = ROOT / ".local/backups" / args.name
+        if not all((backup_dir / name).is_file() for name in BACKUP_FILES):
+            raise ValueError("Copy and verify the fixed backup files before launcher preview.")
+    if args.action == "preview-install":
+        archive_path = ROOT / ".local/package-preview.tar.gz"
+        if not archive_path.is_file():
+            raise ValueError("Build and archive the private launcher package before preview.")
+        verify_package_archive(archive_path)
     ipaddress.IPv4Address(args.host)
     if args.callback_host:
         ipaddress.IPv4Address(args.callback_host)
@@ -132,11 +199,6 @@ def main(argv=None):
     print("SDB model:", model)
     if args.action != "doctor" or args.profile is not None:
         check_identity(model, args.firmware, profile)
-    if args.action == "framework-pull":
-        destinations = {name: private_path(ROOT / ".local/tv-framework" / name)
-                        for name in FRAMEWORK_FILES}
-        if any(destination.exists() for destination in destinations.values()):
-            raise ValueError("A framework reference already exists; preserve and inspect it before retrying.")
     if args.action == "doctor":
         report = collect_diagnostics(client, profile, model, args.firmware, args.callback_host)
         print("Profile status:", profile["support_status"])
@@ -151,6 +213,15 @@ def main(argv=None):
             print(json.dumps(report, indent=2))
         print("Diagnostic observations only. Root, launcher and cleanup have not been tested by this command.")
         return 0 if report["archive_prerequisites"] == "observed_not_root_proof" else 2
+    if args.action == "preview-launch":
+        # This fixed app request is permitted to the SDK user. It avoids a root
+        # session each time a visible app test returns to the original Home.
+        response = client.capture("app_launcher -u 5001 -s com.samsung.tv.bixby-promotion",
+                                  callback_host=args.callback_host, timeout=15)
+        if "[exit:0]" not in response.output:
+            raise RuntimeError("Preview launch request failed; inspect the TV before retrying.")
+        print("Quiet Home preview launch requested. Home/startup routing is unchanged.")
+        return
     if args.action == "push":
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", args.name):
             raise ValueError("Use a simple staging filename without directory components.")
@@ -173,15 +244,20 @@ def main(argv=None):
         commands = ()
     elif args.action == "source-probe":
         commands = ()
+    elif args.action == "snapshot":
+        encoded = encoded_script(ROOT / "recipes/snapshot.sh")
+        commands = (f"printf '%s' {shlex.quote(encoded)} | base64 -d | /bin/sh -s -- {shlex.quote(args.name)}",)
+    elif args.action == "backup-pull":
+        commands = ()
+    elif args.action in ("preview-install", "preview-restore"):
+        commands = ()
     elif args.action == "pull":
         private_path(args.local)
         commands = (pull_command(args.remote),)
     elif args.script:
-        script = args.script.read_bytes()
-        if len(script) > 45000:
-            raise ValueError("Script too large for the bounded command channel; split into phases.")
-        encoded = base64.b64encode(script).decode()
-        commands = (f"printf '%s' {shlex.quote(encoded)} | /bin/sh -s -- " + shlex.join(args.arg),)
+        encoded = encoded_script(args.script)
+        commands = (f"printf '%s' {shlex.quote(encoded)} | base64 -d | /bin/sh -s -- "
+                    + shlex.join(args.arg),)
     else:
         if args.arg:
             raise ValueError("--arg requires --script.")
@@ -190,11 +266,25 @@ def main(argv=None):
         args.host, model=model, callback_host=args.callback_host,
         payloads=ROOT / ".local/build/payloads", commands=commands, command_timeout=30,
         max_appinstall_bytes=max_inline_bytes,
-        read_files=tuple(FRAMEWORK_FILES.items()) if args.action == "framework-pull" else (),
-        output_dir=ROOT / ".local/tv-framework" if args.action == "framework-pull" else None,
+        read_files=(tuple(FRAMEWORK_FILES.items()) if args.action == "framework-pull"
+                    else tuple((local, f"/opt/usr/share/quiet-tizen-backups/{args.name}/{remote}")
+                               for local, remote in BACKUP_FILES.items())
+                    if args.action == "backup-pull" else ()),
+        output_dir=(ROOT / ".local/tv-framework" if args.action == "framework-pull"
+                    else ROOT / ".local/backups" / args.name if args.action == "backup-pull"
+                    else None),
         staged_files=(("Probe.dll", ROOT / ".local/build/Probe/Probe.dll"),)
-                     if args.action == "source-probe" else (),
+                     if args.action == "source-probe" else
+                     (("package.tar.gz", ROOT / ".local/package-preview.tar.gz"),
+                      ("install-launcher.sh", normalized_script_bytes(ROOT / "recipes/install-launcher.sh")),
+                      ("restore-preview.sh", normalized_script_bytes(ROOT / "recipes/restore-preview.sh")))
+                     if args.action == "preview-install" else
+                     (("restore-preview.sh", normalized_script_bytes(ROOT / "recipes/restore-preview.sh")),)
+                     if args.action == "preview-restore" else (),
         run_staged=("Probe.dll",) if args.action == "source-probe" else (),
+        run_staged_shell=(("install-launcher.sh", args.name) if args.action == "preview-install"
+                          else ("restore-preview.sh", args.name) if args.action == "preview-restore"
+                          else None),
     ))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     log = ROOT / ".local/sessions" / f"{stamp}.json"
@@ -215,6 +305,20 @@ def main(argv=None):
         if len(result.get("private_files", [])) != len(FRAMEWORK_FILES):
             raise ValueError("Framework transfer evidence is incomplete; inspect the private session log.")
         print("Four checksum-verified framework references saved under .local/tv-framework/.")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
+    if args.action == "backup-pull":
+        if len(result.get("private_files", [])) != len(BACKUP_FILES):
+            raise ValueError("Backup transfer evidence is incomplete; inspect the private session log.")
+        print(f"Checksum-verified backup files saved privately: .local/backups/{args.name}/")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
+    if args.action == "snapshot":
+        print(f"Fixed TV backup phase saved: {args.name}. Private session: {log.relative_to(ROOT)}")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
+    if args.action in ("preview-install", "preview-restore"):
+        print(f"{args.action} completed. Inspect the TV and private session: {log.relative_to(ROOT)}")
         print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
         return
     if args.action == "source-probe":

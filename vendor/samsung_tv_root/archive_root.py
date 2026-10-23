@@ -286,8 +286,9 @@ async def probe(
     max_appinstall_bytes: int = SDB_APPINSTALL_MAX_SAFE_BYTES,
     read_files: tuple[tuple[str, str], ...] = (),
     output_dir: Path | None = None,
-    staged_files: tuple[tuple[str, Path], ...] = (),
+    staged_files: tuple[tuple[str, Path | bytes], ...] = (),
     run_staged: tuple[str, ...] = (),
+    run_staged_shell: tuple[str, str] | None = None,
 ) -> dict[str, object]:
     ipaddress.IPv4Address(tv_host)
     callback = callback_host or route_callback_host(tv_host)
@@ -374,7 +375,7 @@ async def probe(
                             or name in staged_names):
                         raise ValueError("Invalid staged file name.")
                     staged_names.add(name)
-                    data = local.read_bytes()
+                    data = local if isinstance(local, bytes) else local.read_bytes()
                     if len(data) > MAXIMUM_FRAME_BYTES:
                         raise ValueError("Staged file exceeds root-agent limit.")
                     written = await connection.write_file(
@@ -393,6 +394,19 @@ async def probe(
                              "timed_out": result.timed_out, "stdout": result.stdout,
                              "stderr": result.stderr}
                         )
+                if run_staged_shell:
+                    name, phase = run_staged_shell
+                    if name not in staged_names or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", phase):
+                        raise ValueError("Only an uploaded script and a simple phase name may be run.")
+                    command_text = (f"/bin/cat {shlex.quote(str(STAGING_ROOT / package / name))} "
+                                    f"| /bin/sh -s -- {shlex.quote(phase)} "
+                                    f"{shlex.quote(str(STAGING_ROOT / package))}")
+                    result = await connection.execute(command_text, command_timeout)
+                    evidence.setdefault("commands", []).append(
+                        {"command": command_text, "exit_code": result.exit_code,
+                         "timed_out": result.timed_out, "stdout": result.stdout,
+                         "stderr": result.stderr}
+                    )
                 if commands:
                     evidence.setdefault("commands", [])
                     for command_text in commands:

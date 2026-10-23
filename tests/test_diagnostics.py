@@ -1,9 +1,11 @@
 import contextlib
+import base64
 import io
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -53,7 +55,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse(report["root_tested"])
         self.assertFalse(report["launcher_tested"])
         self.assertFalse(report["cleanup_tested"])
-        self.assertEqual(report["profile"]["support_status"], "access-validated")
+        self.assertEqual(report["profile"]["support_status"], "backup-validated")
         self.assertTrue(report["identity"]["matches_profile"])
         for call in self.client.capture.call_args_list:
             self.assertEqual(call.kwargs["callback_host"], "192.0.2.20")
@@ -123,7 +125,7 @@ class DiagnosticsTests(unittest.TestCase):
         for operation in operations:
             with self.subTest(operation=operation), patch("tv.find_sdb") as find, \
                     patch("tv.SdbClient") as client, patch("tv.probe") as probe:
-                with self.assertRaisesRegex(ValueError, "access-validated"):
+                with self.assertRaisesRegex(ValueError, "backup-validated"):
                     tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
                              "--firmware", self.profile["firmware"], *operation])
                 find.assert_not_called()
@@ -204,6 +206,124 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(probe.call_args.kwargs["staged_files"], (("Probe.dll", built),))
             self.assertEqual(probe.call_args.kwargs["run_staged"], ("Probe.dll",))
             self.assertNotIn("PRIVATE_SOURCE", output.getvalue())
+
+    def test_snapshot_uses_fixed_script_and_rejects_bad_name_before_network(self):
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "commands": [{"stdout": "saved", "stderr": "", "exit_code": 0,
+                                "timed_out": False}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "recipes").mkdir()
+            (root / "recipes/snapshot.sh").write_bytes(b"set -eu\r\necho fixed snapshot\r\n")
+            with patch("tv.ROOT", root), patch("tv.find_sdb", return_value=Path("sdb")) as find, \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for name in ("../escape", "bad name", "bad;id"):
+                    with self.subTest(name=name), self.assertRaisesRegex(ValueError, "phase name"):
+                        tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                                 "--firmware", self.profile["firmware"], "snapshot", name])
+                find.assert_not_called()
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "snapshot", "home-test"])
+            command = probe.call_args.kwargs["commands"][0]
+            self.assertIn(base64.b64encode(b"set -eu\necho fixed snapshot\n").decode(), command)
+            self.assertTrue(command.endswith("base64 -d | /bin/sh -s -- home-test"))
+
+    def test_backup_pull_is_fixed_to_selected_phase_and_refuses_overwrite(self):
+        from root_inventory import BACKUP_FILES
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "private_files": [{"name": name} for name in BACKUP_FILES]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("tv.ROOT", root), patch("tv.find_sdb", return_value=Path("sdb")) as find, \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"], "backup-pull", "home-test"])
+                self.assertEqual(probe.call_args.kwargs["read_files"], tuple(
+                    (local, f"/opt/usr/share/quiet-tizen-backups/home-test/{remote}")
+                    for local, remote in BACKUP_FILES.items()))
+                self.assertEqual(probe.call_args.kwargs["output_dir"],
+                                 root / ".local/backups/home-test")
+                (root / ".local/backups/home-test/package-registry.db").write_bytes(b"keep")
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                             "--firmware", self.profile["firmware"], "backup-pull", "home-test"])
+            self.assertEqual(probe.call_count, 1)
+
+    def test_preview_install_requires_private_backup_and_stages_fixed_scripts(self):
+        from root_inventory import BACKUP_FILES
+        result = {"uid": 0, "euid": 0, "system_files_unchanged": True,
+                  "staging_cleaned": True,
+                  "commands": [{"stdout": "preview requested", "stderr": "", "exit_code": 0,
+                                "timed_out": False}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("tv.ROOT", root), patch("tv.find_sdb") as find:
+                with self.assertRaisesRegex(ValueError, "backup files"):
+                    tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                             "--firmware", self.profile["firmware"],
+                             "preview-install", "home-test"])
+                find.assert_not_called()
+            backup = root / ".local/backups/home-test"
+            backup.mkdir(parents=True)
+            for name in BACKUP_FILES:
+                (backup / name).write_bytes(b"backup")
+            package = root / ".local/package"
+            required = ("BixbyPromotion.dll", "Probe.dll", "quiet-home/apps.json",
+                        "quiet-home/home-layout.json")
+            for name in required:
+                destination = package / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(name.encode())
+            archive = root / ".local/package-preview.tar.gz"
+            with tarfile.open(archive, "w:gz") as stream:
+                for name in required:
+                    stream.add(package / name, arcname="./" + name)
+            recipes = root / "recipes"
+            recipes.mkdir()
+            (recipes / "install-launcher.sh").write_bytes(b"set -eu\r\necho install\r\n")
+            (recipes / "restore-preview.sh").write_bytes(b"set -eu\r\necho restore\r\n")
+            with patch("tv.ROOT", root), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient"), patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe", new_callable=AsyncMock, return_value=result) as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"],
+                         "preview-install", "home-test"])
+            staged = probe.call_args.kwargs["staged_files"]
+            self.assertEqual([name for name, _ in staged],
+                             ["package.tar.gz", "install-launcher.sh", "restore-preview.sh"])
+            self.assertEqual(staged[1][1], b"set -eu\necho install\n")
+            self.assertEqual(staged[2][1], b"set -eu\necho restore\n")
+            self.assertEqual(probe.call_args.kwargs["run_staged_shell"],
+                             ("install-launcher.sh", "home-test"))
+
+    def test_preview_launch_uses_only_fixed_launcher_command(self):
+        from root_inventory import BACKUP_FILES
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup = root / ".local/backups/home-test"
+            backup.mkdir(parents=True)
+            for name in BACKUP_FILES:
+                (backup / name).write_bytes(b"backup")
+            with patch("tv.ROOT", root), patch("tv.find_sdb", return_value=Path("sdb")), \
+                    patch("tv.SdbClient") as client_class, \
+                    patch("tv.observed_model", return_value=self.profile["model"]), \
+                    patch("tv.probe") as probe, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                client_class.return_value.capture.return_value.output = "launched\n[exit:0]\n"
+                tv.main(["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                         "--firmware", self.profile["firmware"],
+                         "preview-launch", "home-test"])
+            client_class.return_value.capture.assert_called_once_with(
+                "app_launcher -u 5001 -s com.samsung.tv.bixby-promotion",
+                callback_host=None, timeout=15)
+            probe.assert_not_called()
 
     def test_explicit_doctor_identity_mismatch_stops_before_diagnostic_commands(self):
         with patch("tv.find_sdb", return_value=Path("sdb")), patch("tv.SdbClient"), \

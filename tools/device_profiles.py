@@ -10,8 +10,11 @@ SUPPORT_STATUSES = frozenset(("case-study", "inventory-only", "access-evaluation
                               "backup-validated", "preview-validated"))
 OPERATIONS = frozenset(("doctor", "root-check", "inventory", "framework-pull", "source-probe",
                         "snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore",
-                        "home-route", "home-restore",
+                        "home-route", "home-restore", "artwork-snapshot", "artwork-backup-pull",
+                        "artwork-install", "artwork-restore",
                         "push", "pull", "exec", "cleanup"))
+QN85DD_ARTWORK_OPERATIONS = frozenset(("artwork-snapshot", "artwork-backup-pull",
+                                        "artwork-install", "artwork-restore"))
 
 
 def _validate_profile(profile):
@@ -73,8 +76,9 @@ def require_operation(profile, operation):
                              "snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore"},
         "preview-validated": {"doctor", "root-check", "inventory", "framework-pull", "source-probe",
                               "snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore",
-                              "home-route", "home-restore"},
-        "case-study": OPERATIONS,
+                              "home-route", "home-restore", "artwork-snapshot", "artwork-backup-pull",
+                              "artwork-install", "artwork-restore"},
+        "case-study": OPERATIONS - QN85DD_ARTWORK_OPERATIONS,
     }[status]
     if operation not in allowed:
         raise ValueError(

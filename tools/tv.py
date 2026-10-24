@@ -25,6 +25,12 @@ from root_inventory import BACKUP_FILES, FRAMEWORK_FILES, ROOT_INVENTORY_COMMAND
 
 PROFILE = load_profile()
 STAGE = "/home/owner/share/tmp/sdk_tools/quiet-tizen"
+ARTWORK_BACKUP_FILES = ("apps-before.json", "apps-before.sha256", "launcher-assembly.sha256")
+ARTWORK_ASSETS = (
+    ("Netflix", "org.tizen.netflix-app", "app-icons/netflix.svg", "artwork-netflix.svg"),
+    ("YouTube", "com.samsung.tv.cobalt-yt", "app-icons/youtube.jpg", "artwork-youtube.jpg"),
+    ("Prime Video", "org.tizen.primevideo", "app-icons/prime-video.svg", "artwork-prime-video.svg"),
+)
 
 
 def private_path(path):
@@ -119,6 +125,24 @@ def verify_package_archive(archive_path):
                 raise ValueError(f"Preview archive differs from current build: {name}")
 
 
+def verify_artwork_inputs():
+    """The fixed update may contain only the owner's three chosen app logos."""
+    catalog = json.loads((ROOT / "launcher/assets/apps.local.json").read_text(encoding="utf-8"))
+    if len(catalog) != 4 or catalog[-1].get("Name") != "Get more apps":
+        raise ValueError("Artwork catalog differs from the selected four entries.")
+    receipts = json.loads((ROOT / ".local/artwork-receipts.json").read_text(encoding="utf-8"))
+    staged = [("artwork-apps.json", ROOT / "launcher/assets/apps.local.json")]
+    for app, expected in zip(catalog[:3], ARTWORK_ASSETS):
+        name, app_id, asset, staged_name = expected
+        if (app.get("Name"), app.get("Id"), app.get("Asset")) != (name, app_id, asset):
+            raise ValueError(f"Artwork catalog entry changed: {name}")
+        path = ROOT / "launcher/assets" / asset
+        if hashlib.sha256(path.read_bytes()).hexdigest() != receipts[name]["asset_sha256"]:
+            raise ValueError(f"Artwork hash differs from the local fetch receipt: {name}")
+        staged.append((staged_name, path))
+    return tuple(staged)
+
+
 def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -148,6 +172,14 @@ def main(argv=None):
     home_route.add_argument("name", help="Verified backup phase name")
     home_restore = sub.add_parser("home-restore", help="Restore original Home/startup selectors")
     home_restore.add_argument("name", help="Verified backup phase name")
+    artwork_snapshot = sub.add_parser("artwork-snapshot", help="Back up the current Quiet Home app catalog")
+    artwork_snapshot.add_argument("name", help="New artwork backup phase name")
+    artwork_pull = sub.add_parser("artwork-backup-pull", help="Copy the current app catalog backup privately")
+    artwork_pull.add_argument("name", help="Existing artwork backup phase name")
+    artwork_install = sub.add_parser("artwork-install", help="Install three local app logos and catalog")
+    artwork_install.add_argument("name", help="Verified artwork backup phase name")
+    artwork_restore = sub.add_parser("artwork-restore", help="Restore the placeholder app catalog")
+    artwork_restore.add_argument("name", help="Verified artwork backup phase name")
     run = sub.add_parser("exec", help="Execute one reviewed command or short script using temporary root")
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--command")
@@ -166,7 +198,8 @@ def main(argv=None):
     if args.action != "doctor" or args.profile is not None:
         check_identity(profile["model"], args.firmware, profile)
     if args.action in ("snapshot", "backup-pull", "preview-install", "preview-launch", "preview-restore",
-                       "home-route", "home-restore") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.name):
+                       "home-route", "home-restore", "artwork-snapshot", "artwork-backup-pull",
+                       "artwork-install", "artwork-restore") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.name):
         raise ValueError("Use a simple backup phase name without directory components.")
     if args.action == "source-probe" and not (ROOT / ".local/build/Probe/Probe.dll").is_file():
         raise ValueError("Build the read-only Probe.dll locally before source-probe.")
@@ -182,6 +215,20 @@ def main(argv=None):
                         for name in BACKUP_FILES}
         if any(destination.exists() for destination in destinations.values()):
             raise ValueError("A backup file already exists locally; preserve and inspect it before retrying.")
+    if args.action == "artwork-backup-pull":
+        destinations = [private_path(ROOT / ".local/backups" / args.name / name)
+                        for name in ARTWORK_BACKUP_FILES]
+        if any(path.exists() for path in destinations):
+            raise ValueError("An artwork backup already exists locally; preserve it before retrying.")
+    if args.action in ("artwork-install", "artwork-restore"):
+        backup_dir = ROOT / ".local/backups" / args.name
+        if not all((backup_dir / name).is_file() for name in ARTWORK_BACKUP_FILES):
+            raise ValueError("Copy the artwork catalog backup before changing resources.")
+        digest = (backup_dir / "apps-before.sha256").read_text().split()[0]
+        if hashlib.sha256((backup_dir / "apps-before.json").read_bytes()).hexdigest() != digest:
+            raise ValueError("Artwork backup catalog digest mismatch.")
+    if args.action == "artwork-install":
+        artwork_staged = verify_artwork_inputs()
     if args.action in ("preview-install", "preview-launch", "preview-restore", "home-route", "home-restore"):
         backup_dir = ROOT / ".local/backups" / args.name
         if not all((backup_dir / name).is_file() for name in BACKUP_FILES):
@@ -252,9 +299,13 @@ def main(argv=None):
     elif args.action == "snapshot":
         encoded = encoded_script(ROOT / "recipes/snapshot.sh")
         commands = (f"printf '%s' {shlex.quote(encoded)} | base64 -d | /bin/sh -s -- {shlex.quote(args.name)}",)
-    elif args.action == "backup-pull":
+    elif args.action == "artwork-snapshot":
+        encoded = encoded_script(ROOT / "recipes/snapshot-artwork.sh")
+        commands = (f"printf '%s' {shlex.quote(encoded)} | base64 -d | /bin/sh -s -- {shlex.quote(args.name)}",)
+    elif args.action in ("backup-pull", "artwork-backup-pull"):
         commands = ()
-    elif args.action in ("preview-install", "preview-restore", "home-route", "home-restore"):
+    elif args.action in ("preview-install", "preview-restore", "home-route", "home-restore",
+                         "artwork-install", "artwork-restore"):
         commands = ()
     elif args.action == "pull":
         private_path(args.local)
@@ -274,9 +325,13 @@ def main(argv=None):
         read_files=(tuple(FRAMEWORK_FILES.items()) if args.action == "framework-pull"
                     else tuple((local, f"/opt/usr/share/quiet-tizen-backups/{args.name}/{remote}")
                                for local, remote in BACKUP_FILES.items())
-                    if args.action == "backup-pull" else ()),
+                    if args.action == "backup-pull" else
+                    tuple((name, f"/opt/usr/share/quiet-tizen-backups/{args.name}/{name}")
+                          for name in ARTWORK_BACKUP_FILES)
+                    if args.action == "artwork-backup-pull" else ()),
         output_dir=(ROOT / ".local/tv-framework" if args.action == "framework-pull"
-                    else ROOT / ".local/backups" / args.name if args.action == "backup-pull"
+                    else ROOT / ".local/backups" / args.name
+                    if args.action in ("backup-pull", "artwork-backup-pull")
                     else None),
         staged_files=(("Probe.dll", ROOT / ".local/build/Probe/Probe.dll"),)
                      if args.action == "source-probe" else
@@ -290,12 +345,20 @@ def main(argv=None):
                       ("restore-home-route.sh", normalized_script_bytes(ROOT / "recipes/restore-home-route.sh")))
                      if args.action == "home-route" else
                      (("restore-home-route.sh", normalized_script_bytes(ROOT / "recipes/restore-home-route.sh")),)
-                     if args.action == "home-restore" else (),
+                     if args.action == "home-restore" else
+                     (*artwork_staged,
+                      ("install-artwork.sh", normalized_script_bytes(ROOT / "recipes/install-artwork.sh")),
+                      ("restore-artwork.sh", normalized_script_bytes(ROOT / "recipes/restore-artwork.sh")))
+                     if args.action == "artwork-install" else
+                     (("restore-artwork.sh", normalized_script_bytes(ROOT / "recipes/restore-artwork.sh")),)
+                     if args.action == "artwork-restore" else (),
         run_staged=("Probe.dll",) if args.action == "source-probe" else (),
         run_staged_shell=(("install-launcher.sh", args.name) if args.action == "preview-install"
                           else ("restore-preview.sh", args.name) if args.action == "preview-restore"
                           else ("route-home.sh", args.name) if args.action == "home-route"
                           else ("restore-home-route.sh", args.name) if args.action == "home-restore"
+                          else ("install-artwork.sh", args.name) if args.action == "artwork-install"
+                          else ("restore-artwork.sh", args.name) if args.action == "artwork-restore"
                           else None),
     ))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -325,11 +388,22 @@ def main(argv=None):
         print(f"Checksum-verified backup files saved privately: .local/backups/{args.name}/")
         print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
         return
+    if args.action == "artwork-backup-pull":
+        if len(result.get("private_files", [])) != len(ARTWORK_BACKUP_FILES):
+            raise ValueError("Artwork backup transfer evidence is incomplete; inspect the private session log.")
+        print(f"Checksum-verified artwork backup saved privately: .local/backups/{args.name}/")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
     if args.action == "snapshot":
         print(f"Fixed TV backup phase saved: {args.name}. Private session: {log.relative_to(ROOT)}")
         print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
         return
-    if args.action in ("preview-install", "preview-restore", "home-route", "home-restore"):
+    if args.action == "artwork-snapshot":
+        print(f"Fixed artwork catalog snapshot saved on TV: {args.name}. Private session: {log.relative_to(ROOT)}")
+        print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
+        return
+    if args.action in ("preview-install", "preview-restore", "home-route", "home-restore",
+                       "artwork-install", "artwork-restore"):
         print(f"{args.action} completed. Inspect the TV and private session: {log.relative_to(ROOT)}")
         print("UID/EUID 0 verified; root staging cleaned; passwd and SDB key hashes unchanged.")
         return

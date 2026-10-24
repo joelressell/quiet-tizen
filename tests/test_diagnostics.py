@@ -1,5 +1,6 @@
 import contextlib
 import base64
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -302,6 +303,45 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(staged[2][1], b"set -eu\necho restore\n")
             self.assertEqual(probe.call_args.kwargs["run_staged_shell"],
                              ("install-launcher.sh", "home-test"))
+
+    def test_artwork_install_refuses_missing_or_corrupt_backup_before_connection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("tv.ROOT", root), patch("tv.find_sdb") as find:
+                args = ["--host", "192.0.2.10", "--profile", str(CANDIDATE_PATH),
+                        "--firmware", self.profile["firmware"], "artwork-install", "art-test"]
+                with self.assertRaisesRegex(ValueError, "Copy the artwork catalog backup"):
+                    tv.main(args)
+                backup = root / ".local/backups/art-test"
+                backup.mkdir(parents=True)
+                (backup / "apps-before.json").write_bytes(b"original catalog")
+                (backup / "apps-before.sha256").write_text("0" * 64 + "  catalog\n")
+                (backup / "launcher-assembly.sha256").write_text("0" * 64 + "  launcher\n")
+                with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                    tv.main(args)
+                find.assert_not_called()
+
+    def test_artwork_inputs_require_selected_apps_and_untampered_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = root / "launcher/assets"
+            assets.mkdir(parents=True)
+            catalog, receipts = [], {}
+            for name, app_id, asset, _ in tv.ARTWORK_ASSETS:
+                path = assets / asset
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(name.encode())
+                catalog.append({"Name": name, "Id": app_id, "Asset": asset})
+                receipts[name] = {"asset_sha256": hashlib.sha256(name.encode()).hexdigest()}
+            catalog.append({"Name": "Get more apps"})
+            (assets / "apps.local.json").write_text(json.dumps(catalog))
+            (root / ".local").mkdir()
+            (root / ".local/artwork-receipts.json").write_text(json.dumps(receipts))
+            with patch("tv.ROOT", root):
+                self.assertEqual(len(tv.verify_artwork_inputs()), 4)
+                (assets / "app-icons/netflix.svg").write_bytes(b"changed")
+                with self.assertRaisesRegex(ValueError, "hash differs"):
+                    tv.verify_artwork_inputs()
 
     def test_preview_launch_uses_only_fixed_launcher_command(self):
         from root_inventory import BACKUP_FILES

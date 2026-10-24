@@ -32,6 +32,10 @@ class DeviceProfileTests(unittest.TestCase):
         require_operation(self.candidate, "doctor")
         require_operation(self.candidate, "root-check")
         require_operation(self.candidate, "inventory")
+        for operation in ("artwork-snapshot", "artwork-backup-pull", "artwork-install", "artwork-restore"):
+            require_operation(self.candidate, operation)
+            with self.assertRaisesRegex(ValueError, "case-study"):
+                require_operation(self.original, operation)
         require_operation(self.candidate, "framework-pull")
         require_operation(self.candidate, "source-probe")
         require_operation(self.candidate, "snapshot")
